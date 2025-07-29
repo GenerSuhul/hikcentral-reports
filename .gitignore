@@ -1,0 +1,14 @@
+# node
+node_modules/
+.cache/
+dist/
+
+# build
+build/
+
+# sensitive
+.env
+
+# misc
+.DS_Store
+.vscode/
