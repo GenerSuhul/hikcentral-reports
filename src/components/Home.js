@@ -21,7 +21,7 @@ const Home = () => {
       </motion.div>
 
       <h1 className="text-4xl font-bold bg-gradient-to-r from-gray-900 to-gray-600 bg-clip-text text-transparent mb-4">
-        Automatizador de Reportes HikCentral Reports
+        Automatizador de Reportes Agrisystems
       </h1>
       <p className="text-xl text-gray-600 mb-8 max-w-2xl mx-auto">
         Carga tus reportes de asistencia en Excel y el sistema carga automaticamente los correos a cada sucursal.
