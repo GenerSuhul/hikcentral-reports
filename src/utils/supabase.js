@@ -75,3 +75,31 @@ export const deleteBranchContact = async (id) => {
     .eq('id', id);
   if (error) throw error;
 };
+
+// utils/supabase.js (al final del archivo)
+
+export const loginUser = async (email, password) => {
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('email', email)
+      .eq('password', password)
+      .maybeSingle(); // No lanza error si no hay coincidencia
+
+    if (error) {
+      console.error('Error Supabase:', error);
+      return { user: null, error: 'Error del servidor. Intenta más tarde.' };
+    }
+
+    if (!data) {
+      return { user: null, error: 'Correo o contraseña inválidos.' };
+    }
+
+    return { user: data, error: null };
+
+  } catch (e) {
+    console.error('Excepción inesperada:', e);
+    return { user: null, error: 'Error inesperado.' };
+  }
+};
