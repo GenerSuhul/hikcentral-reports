@@ -19,20 +19,27 @@ const normalizeHeader = (header) => {
 
 export const parseExcelFile = async (file) => {
   return new Promise((resolve, reject) => {
+    console.log('🔄 Iniciando parsing del archivo Excel:', file.name);
     const reader = new FileReader();
 
     reader.onload = (e) => {
       try {
+        console.log('📖 Archivo leído, procesando datos...');
         const data = new Uint8Array(e.target.result);
         const workbook = XLSX.read(data, { type: 'array' });
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
+        
+        console.log('📊 Hoja de trabajo:', sheetName);
+        console.log('📋 Hojas disponibles:', workbook.SheetNames);
 
         let headerRowIndex = -1;
         let headers = [];
 
         // Iterate through rows to find the header row
         const range = XLSX.utils.decode_range(worksheet['!ref']);
+        console.log('📏 Rango de datos:', range);
+        
         for (let R = range.s.r; R <= range.e.r; ++R) {
           const currentRowHeaders = [];
           for (let C = range.s.c; C <= range.e.c; ++C) {
@@ -43,6 +50,8 @@ export const parseExcelFile = async (file) => {
             }
           }
 
+          console.log(`🔍 Fila ${R}:`, currentRowHeaders);
+
           const foundAllRequired = REQUIRED_HEADERS.every(reqHeader =>
             currentRowHeaders.some(h => h.includes(normalizeHeader(reqHeader)))
           );
@@ -50,16 +59,21 @@ export const parseExcelFile = async (file) => {
           if (foundAllRequired) {
             headerRowIndex = R;
             headers = currentRowHeaders;
+            console.log('✅ Fila de encabezado encontrada en índice:', R);
+            console.log('📋 Headers encontrados:', headers);
             break;
           }
         }
 
         if (headerRowIndex === -1) {
+          console.error('❌ No se encontró fila de encabezado válida');
+          console.log('🔍 Headers requeridos:', REQUIRED_HEADERS);
           throw new Error('No se encontró la fila de encabezado válida con todas las columnas requeridas.');
         }
 
         // Map normalized headers to original headers for data extraction
         const headerMap = {};
+        const originalHeaders = [];
         for (let C = range.s.c; C <= range.e.c; ++C) {
           const cellAddress = XLSX.utils.encode_cell({ r: headerRowIndex, c: C });
           const cell = worksheet[cellAddress];
@@ -67,6 +81,7 @@ export const parseExcelFile = async (file) => {
             const normalized = normalizeHeader(String(cell.v));
             const original = String(cell.v);
             headerMap[normalized] = original;
+            originalHeaders.push(original);
           }
         }
 
@@ -78,6 +93,9 @@ export const parseExcelFile = async (file) => {
         });
 
         const processedData = [];
+        console.log('📊 Procesando filas de datos...');
+        console.log('📋 Headers originales:', originalHeaders);
+        
         jsonData.forEach((row, rowIndex) => {
           const record = {};
           let isValidRow = true;
@@ -85,24 +103,37 @@ export const parseExcelFile = async (file) => {
           REQUIRED_HEADERS.forEach(reqHeader => {
             const normalizedReqHeader = normalizeHeader(reqHeader);
             let foundColumn = false;
-            for (const normalizedCol in headerMap) {
-              if (normalizedCol.includes(normalizedReqHeader)) {
-                const originalColName = headerMap[normalizedCol];
-                record[reqHeader] = row[headers.indexOf(normalizedCol)]; // Use index from normalized headers
+            
+            // Buscar la columna que coincida con el header requerido
+            for (let colIndex = 0; colIndex < originalHeaders.length; colIndex++) {
+              const originalHeader = originalHeaders[colIndex];
+              const normalizedHeader = normalizeHeader(originalHeader);
+              
+              if (normalizedHeader.includes(normalizedReqHeader) || 
+                  normalizedReqHeader.includes(normalizedHeader)) {
+                record[reqHeader] = row[colIndex];
                 foundColumn = true;
                 break;
               }
             }
+            
             if (!foundColumn) {
+              console.warn(`⚠️ Columna no encontrada para: ${reqHeader}`);
               isValidRow = false; // Missing a required column for this row
             }
           });
 
           if (isValidRow && Object.keys(record).length > 0) {
             processedData.push(record);
+            if (rowIndex < 3) { // Solo mostrar los primeros 3 registros para debug
+              console.log(`✅ Registro ${rowIndex + 1} procesado:`, record);
+            }
+          } else {
+            console.warn(`⚠️ Fila ${rowIndex + 1} descartada - no válida`);
           }
         });
 
+        console.log(`🎯 Total de registros procesados: ${processedData.length}`);
         resolve(processedData);
 
       } catch (error) {
@@ -119,10 +150,21 @@ export const parseExcelFile = async (file) => {
 };
 
 export const extractBranchCode = (department) => {
-  if (!department) return null;
-  const parts = department.split('>');
-  if (parts.length > 1) {
-    return parts[parts.length - 1].trim();
+  if (!department) {
+    console.log('⚠️ Departamento vacío o nulo');
+    return null;
   }
-  return null;
+  
+  console.log('🔍 Extrayendo código de sucursal de:', department);
+  const parts = department.split('>');
+  console.log('📋 Partes del departamento:', parts);
+  
+  if (parts.length > 1) {
+    const branchCode = parts[parts.length - 1].trim();
+    console.log('✅ Código de sucursal extraído:', branchCode);
+    return branchCode;
+  } else {
+    console.log('⚠️ No se encontró separador ">" en el departamento');
+    return null;
+  }
 };
