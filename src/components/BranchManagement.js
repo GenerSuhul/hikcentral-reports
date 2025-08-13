@@ -37,6 +37,7 @@ const BranchManagement = () => {
   const [editingBranch, setEditingBranch] = useState(null);
   const [newContactEmail, setNewContactEmail] = useState('');
   const [newContactType, setNewContactType] = useState('RRHH');
+  const [newContactDepartments, setNewContactDepartments] = useState('');
   const [editingContact, setEditingContact] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -151,13 +152,34 @@ const BranchManagement = () => {
     setError(null);
     setSuccessMessage(null);
     try {
-      await addBranchContact({
-        branch_id: selectedBranch.id,
+      // Preparar los datos para insertar
+      const contactData = {
+        branch_id: selectedBranch?.id,
         email: newContactEmail.trim(),
         type: newContactType
-      });
+      };
+
+      // Solo agregar departments si es para AC_RNV_CMX_PPTN_1
+      if (selectedBranch?.code === 'AC_RNV_CMX_PPTN_1') {
+        // Si el usuario seleccionó departamentos, usarlos
+        if (newContactDepartments.length > 0) {
+          contactData.departments = newContactDepartments;
+        } else {
+          // Por defecto, RRHH y Gerente manejan todos los departamentos
+          if (newContactType === 'RRHH' || newContactType === 'Gerente') {
+            contactData.departments = ['DEPTO. COMERCIAL', 'DEPTO. ADMINISTRACION', 'DEPTO. COMPRAS', 'DEPTO. LOGISTICA', 'DEPTO. RRHH'];
+          }
+          // Supervisor puede tener departamentos específicos (se pueden editar después)
+          else if (newContactType === 'Supervisor') {
+            contactData.departments = ['DEPTO. COMERCIAL', 'DEPTO. ADMINISTRACION', 'DEPTO. COMPRAS', 'DEPTO. LOGISTICA', 'DEPTO. RRHH'];
+          }
+        }
+      }
+
+      await addBranchContact(contactData);
       setNewContactEmail('');
       setNewContactType('RRHH');
+      setNewContactDepartments(''); // Limpiar el estado de departamentos
       setShowAddContactModal(false);
       await loadBranches();
       setSuccessMessage('Contacto agregado con éxito.');
@@ -177,7 +199,18 @@ const BranchManagement = () => {
     setError(null);
     setSuccessMessage(null);
     try {
-      await updateBranchContact(contactId, { email: editingContact.email.trim(), type: editingContact.type });
+      // Preparar los datos para actualizar
+      const updateData = {
+        email: editingContact.email.trim(),
+        type: editingContact.type
+      };
+
+      // Solo agregar departments si es para AC_RNV_CMX_PPTN_1
+      if (editingContact.branch_code === 'AC_RNV_CMX_PPTN_1' && editingContact.departments) {
+        updateData.departments = editingContact.departments;
+      }
+
+      await updateBranchContact(contactId, updateData);
       setEditingContact(null);
       await loadBranches();
       setSuccessMessage('Contacto actualizado con éxito.');
@@ -529,8 +562,35 @@ const BranchManagement = () => {
                                 
                                 <div className="flex space-x-1">
                     <motion.button
-                                    onClick={() => setEditingContact({ ...contact })}
-                                    className="p-1 text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded transition-colors"
+                      onClick={() => {
+                        // Asegurar que el contacto tenga la información de la sucursal y normalizar departments
+                        let normalizedDepartments = null;
+                        
+                        // Si departments existe, asegurar que sea un array
+                        if (contact.departments) {
+                          if (typeof contact.departments === 'string') {
+                            try {
+                              normalizedDepartments = JSON.parse(contact.departments);
+                            } catch (error) {
+                              console.warn('Error parsing departments JSON:', error);
+                              normalizedDepartments = [];
+                            }
+                          } else if (Array.isArray(contact.departments)) {
+                            normalizedDepartments = contact.departments;
+                          } else {
+                            normalizedDepartments = [];
+                          }
+                        }
+                        
+                        const contactWithBranch = {
+                          ...contact,
+                          branch_code: branch.code,
+                          branch_name: branch.name,
+                          departments: normalizedDepartments
+                        };
+                        setEditingContact(contactWithBranch);
+                      }}
+                      className="p-1 text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded transition-colors"
                       whileHover={{ scale: 1.1 }}
                       whileTap={{ scale: 0.9 }}
                     >
@@ -697,29 +757,34 @@ const BranchManagement = () => {
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-white rounded-xl p-6 w-full max-w-md"
+              className="bg-white rounded-xl p-8 w-full max-w-lg shadow-2xl"
             >
               <div className="flex items-center justify-between mb-6">
-                <h3 className="text-lg font-semibold text-slate-900">
-                  Nuevo Contacto - {selectedBranch.name}
-          </h3>
+                <div>
+                  <h3 className="text-xl font-bold text-slate-900">
+                    Nuevo Contacto - {selectedBranch?.name || 'Sucursal'}
+                  </h3>
+                  <p className="text-sm text-slate-500 mt-1">
+                    Agrega un nuevo contacto a la sucursal
+                  </p>
+                </div>
                 <button
                   onClick={() => setShowAddContactModal(false)}
-                  className="text-slate-400 hover:text-slate-600"
+                  className="text-slate-400 hover:text-slate-600 transition-colors p-2 hover:bg-slate-100 rounded-lg"
                 >
                   <XCircle className="w-6 h-6" />
                 </button>
               </div>
               
-              <form onSubmit={(e) => { e.preventDefault(); handleAddContact(); }} className="space-y-4">
+              <form onSubmit={(e) => { e.preventDefault(); handleAddContact(); }} className="space-y-6">
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-2">
                     Correo Electrónico
                   </label>
-                <input
-                  type="email"
-                  value={newContactEmail}
-                  onChange={(e) => setNewContactEmail(e.target.value)}
+                  <input
+                    type="email"
+                    value={newContactEmail}
+                    onChange={(e) => setNewContactEmail(e.target.value)}
                     className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-800 focus:border-transparent transition-colors"
                     placeholder="contacto@sucursal.com"
                     required
@@ -730,30 +795,79 @@ const BranchManagement = () => {
                   <label className="block text-sm font-medium text-slate-700 mb-2">
                     Tipo de Contacto
                   </label>
-                <select
-                  value={newContactType}
-                  onChange={(e) => setNewContactType(e.target.value)}
+                  <select
+                    value={newContactType}
+                    onChange={(e) => setNewContactType(e.target.value)}
                     className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-800 focus:border-transparent transition-colors"
-                >
-                  <option value="RRHH">RRHH</option>
-                  <option value="Administración">Administración</option>
-                  <option value="Ventas">Ventas</option>
-                  <option value="Soporte">Soporte</option>
-                  <option value="Gerencia">Gerencia</option>
-                </select>
+                  >
+                    <option value="RRHH">RRHH</option>
+                    <option value="Supervisor">Supervisor</option>
+                    <option value="Gerente">Gerente</option>
+                  </select>
                 </div>
+
+                {/* Campo para departamentos (solo para AC_RNV_CMX_PPTN_1) */}
+                {selectedBranch?.code === 'AC_RNV_CMX_PPTN_1' && (
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                    <div className="flex items-center gap-2 mb-3">
+                      <div className="w-6 h-6 bg-blue-100 rounded-full flex items-center justify-center">
+                        <span className="text-blue-600 text-sm font-bold">🏢</span>
+                      </div>
+                      <label className="text-sm font-semibold text-blue-800">
+                        Departamentos que maneja
+                      </label>
+                    </div>
+                    
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-2 gap-2">
+                        {['General', 'DEPTO. COMERCIAL', 'DEPTO. ADMINISTRACION', 'DEPTO. COMPRAS', 'DEPTO. LOGISTICA', 'DEPTO. RRHH'].map(dept => (
+                          <label key={dept} className="flex items-center gap-2 p-2 bg-white rounded-lg border border-blue-200 hover:bg-blue-50 cursor-pointer transition-colors">
+                            <input
+                              type="checkbox"
+                              checked={newContactDepartments.includes(dept)}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setNewContactDepartments([...newContactDepartments, dept]);
+                                } else {
+                                  setNewContactDepartments(newContactDepartments.filter(d => d !== dept));
+                                }
+                              }}
+                              className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                            />
+                            <span className="text-sm font-medium text-blue-800">{dept}</span>
+                          </label>
+                        ))}
+                      </div>
+                      
+                      <div className="flex items-start gap-2">
+                        <div className="w-5 h-5 text-blue-500 mt-0.5">
+                          💡
+                        </div>
+                        <div className="text-xs text-blue-700">
+                          <p className="font-medium mb-1">Departamentos seleccionados:</p>
+                          <p className="text-blue-600 font-semibold">
+                            {newContactDepartments.length > 0 
+                              ? newContactDepartments.join(', ') 
+                              : 'Ninguno (maneja todos)'
+                            }
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
                 
-                <div className="flex space-x-3 pt-4">
+                <div className="flex space-x-4 pt-6">
                   <button
                     type="button"
                     onClick={() => setShowAddContactModal(false)}
-                    className="flex-1 px-4 py-3 border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 transition-colors"
+                    className="flex-1 px-6 py-3 border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 transition-colors font-medium"
                   >
                     Cancelar
                   </button>
                   <button
                     type="submit"
-                    className="flex-1 bg-slate-800 hover:bg-slate-700 text-white px-4 py-3 rounded-lg font-medium transition-colors"
+                    className="flex-1 bg-slate-800 hover:bg-slate-700 text-white px-6 py-3 rounded-lg font-medium transition-colors shadow-sm"
                   >
                     Agregar Contacto
                   </button>
@@ -838,7 +952,7 @@ const BranchManagement = () => {
       </AnimatePresence>
 
       {/* Edit Contact Modal */}
-                <AnimatePresence>
+      <AnimatePresence>
         {editingContact && (
           <motion.div
             initial={{ opacity: 0 }}
@@ -846,31 +960,38 @@ const BranchManagement = () => {
             exit={{ opacity: 0 }}
             className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50"
           >
-                    <motion.div
+            <motion.div
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-white rounded-xl p-6 w-full max-w-md"
+              className="bg-white rounded-xl p-8 w-full max-w-lg shadow-2xl"
             >
               <div className="flex items-center justify-between mb-6">
-                <h3 className="text-lg font-semibold text-slate-900">Editar Contacto</h3>
+                <div>
+                  <h3 className="text-xl font-bold text-slate-900">
+                    Editar Contacto
+                  </h3>
+                  <p className="text-sm text-slate-500 mt-1">
+                    Actualiza la información del contacto
+                  </p>
+                </div>
                 <button
                   onClick={() => setEditingContact(null)}
-                  className="text-slate-400 hover:text-slate-600"
+                  className="text-slate-400 hover:text-slate-600 transition-colors p-2 hover:bg-slate-100 rounded-lg"
                 >
                   <XCircle className="w-6 h-6" />
                 </button>
               </div>
               
-              <form onSubmit={(e) => { e.preventDefault(); handleUpdateContact(editingContact.id); }} className="space-y-4">
+              <form onSubmit={(e) => { e.preventDefault(); handleUpdateContact(editingContact.id); }} className="space-y-6">
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-2">
                     Correo Electrónico
                   </label>
-                          <input
-                            type="email"
-                            value={editingContact.email}
-                            onChange={(e) => setEditingContact({ ...editingContact, email: e.target.value })}
+                  <input
+                    type="email"
+                    value={editingContact.email}
+                    onChange={(e) => setEditingContact({ ...editingContact, email: e.target.value })}
                     className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-800 focus:border-transparent transition-colors"
                     required
                   />
@@ -880,34 +1001,90 @@ const BranchManagement = () => {
                   <label className="block text-sm font-medium text-slate-700 mb-2">
                     Tipo de Contacto
                   </label>
-                          <select
-                            value={editingContact.type}
-                            onChange={(e) => setEditingContact({ ...editingContact, type: e.target.value })}
+                  <select
+                    value={editingContact.type}
+                    onChange={(e) => setEditingContact({ ...editingContact, type: e.target.value })}
                     className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-800 focus:border-transparent transition-colors"
-                          >
-                            <option value="RRHH">RRHH</option>
-                            <option value="Administración">Administración</option>
-                            <option value="Ventas">Ventas</option>
-                            <option value="Soporte">Soporte</option>
-                            <option value="Gerencia">Gerencia</option>
-                          </select>
+                  >
+                    <option value="RRHH">RRHH</option>
+                    <option value="Supervisor">Supervisor</option>
+                    <option value="Gerente">Gerente</option>
+                  </select>
                 </div>
+
+                {/* Campo para departamentos (solo para AC_RNV_CMX_PPTN_1) */}
+                {editingContact.branch_code === 'AC_RNV_CMX_PPTN_1' && (
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                    <div className="flex items-center gap-2 mb-3">
+                      <div className="w-6 h-6 bg-blue-100 rounded-full flex items-center justify-center">
+                        <span className="text-blue-600 text-sm font-bold">🏢</span>
+                      </div>
+                      <label className="text-sm font-semibold text-blue-800">
+                        Departamentos que maneja
+                      </label>
+                    </div>
+                    
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-2 gap-2">
+                        {['General', 'DEPTO. COMERCIAL', 'DEPTO. ADMINISTRACION', 'DEPTO. COMPRAS', 'DEPTO. LOGISTICA', 'DEPTO. RRHH'].map(dept => (
+                          <label key={dept} className="flex items-center gap-2 p-2 bg-white rounded-lg border border-blue-200 hover:bg-blue-50 cursor-pointer transition-colors">
+                            <input
+                              type="checkbox"
+                              checked={editingContact.departments && Array.isArray(editingContact.departments) ? editingContact.departments.includes(dept) : false}
+                              onChange={(e) => {
+                                const currentDepts = editingContact.departments && Array.isArray(editingContact.departments) ? editingContact.departments : [];
+                                if (e.target.checked) {
+                                  setEditingContact({
+                                    ...editingContact,
+                                    departments: [...currentDepts, dept]
+                                  });
+                                } else {
+                                  setEditingContact({
+                                    ...editingContact,
+                                    departments: currentDepts.filter(d => d !== dept)
+                                  });
+                                }
+                              }}
+                              className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                            />
+                            <span className="text-sm font-medium text-blue-800">{dept}</span>
+                          </label>
+                        ))}
+                      </div>
+                      
+                      <div className="flex items-start gap-2">
+                        <div className="w-5 h-5 text-blue-500 mt-0.5">
+                          💡
+                        </div>
+                        <div className="text-xs text-blue-700">
+                          <p className="font-medium mb-1">Departamentos seleccionados:</p>
+                          <p className="text-blue-600 font-semibold">
+                            {editingContact.departments && Array.isArray(editingContact.departments) && editingContact.departments.length > 0 
+                              ? editingContact.departments.join(', ') 
+                              : 'Ninguno (maneja todos)'
+                            }
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
                 
-                <div className="flex space-x-3 pt-4">
+                <div className="flex space-x-4 pt-6">
                   <button
                     type="button"
-                            onClick={() => setEditingContact(null)}
-                    className="flex-1 px-4 py-3 border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 transition-colors"
-                          >
-                            Cancelar
+                    onClick={() => setEditingContact(null)}
+                    className="flex-1 px-6 py-3 border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 transition-colors font-medium"
+                  >
+                    Cancelar
                   </button>
                   <button
                     type="submit"
-                    className="flex-1 bg-slate-800 hover:bg-slate-700 text-white px-4 py-3 rounded-lg font-medium transition-colors"
+                    className="flex-1 bg-slate-800 hover:bg-slate-700 text-white px-6 py-3 rounded-lg font-medium transition-colors shadow-sm"
                   >
-                    Actualizar Contacto
+                    Guardar Cambios
                   </button>
-                        </div>
+                </div>
               </form>
             </motion.div>
           </motion.div>

@@ -5,6 +5,86 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+// Función para obtener contactos por departamento para AC_RNV_CMX_PPTN_1
+export const getContactsByDepartment = (branchContacts, department) => {
+  if (!branchContacts || branchContacts.length === 0) {
+    console.log(`🔍 getContactsByDepartment: No hay contactos para filtrar`);
+    return [];
+  }
+
+  console.log(`🔍 Filtrando contactos para departamento: "${department}"`);
+  console.log(`📋 Contactos disponibles:`, branchContacts.map(c => ({
+    type: c.type,
+    email: c.email,
+    departments: c.departments
+  })));
+
+  // Si es departamento General, aplicar la misma lógica de filtrado
+  if (!department || department === '-') {
+    console.log(`🔍 Departamento "${department}" - retornando todos los contactos`);
+    return branchContacts;
+  }
+
+  const departmentContacts = branchContacts.filter(contact => {
+    let shouldInclude = false;
+    let reason = '';
+
+    // Normalizar departments a array
+    let contactDepartments = null;
+    if (contact.departments) {
+      if (typeof contact.departments === 'string') {
+        try {
+          contactDepartments = JSON.parse(contact.departments);
+        } catch (error) {
+          console.warn(`Error parsing departments JSON for ${contact.email}:`, error);
+          contactDepartments = [];
+        }
+      } else if (Array.isArray(contact.departments)) {
+        contactDepartments = contact.departments;
+      } else {
+        contactDepartments = [];
+      }
+    }
+
+    // Rule 1: RRHH siempre maneja todos los departamentos
+    if (contact.type === 'RRHH') {
+      shouldInclude = true;
+      reason = 'RRHH maneja todos los departamentos por tipo';
+    }
+    // Rule 2: Gerente siempre maneja todos los departamentos
+    else if (contact.type === 'Gerente') {
+      shouldInclude = true;
+      reason = 'Gerente maneja todos los departamentos por tipo';
+    }
+    // Rule 3: Si contact tiene departamentos específicos asignados
+    else if (contactDepartments && Array.isArray(contactDepartments) && contactDepartments.length > 0) {
+      // Normalizar nombres de departamentos para comparación
+      const normalizedContactDepts = contactDepartments.map(dept => {
+        // Mapear variaciones de nombres
+        if (dept === 'ADMINISTRACION') return 'DEPTO. ADMINISTRACION';
+        if (dept === 'General') return 'General';
+        return dept; // Mantener DEPTO. XXX como está
+      });
+      
+      shouldInclude = normalizedContactDepts.includes(department);
+      reason = shouldInclude 
+        ? `Departamento "${department}" está en su lista: ${JSON.stringify(normalizedContactDepts)}`
+        : `Departamento "${department}" NO está en su lista: ${JSON.stringify(normalizedContactDepts)}`;
+    }
+    // Rule 4: Si contact NO tiene departamentos asignados (null o array vacío), maneja todo
+    else if (!contactDepartments || (Array.isArray(contactDepartments) && contactDepartments.length === 0)) {
+      shouldInclude = true;
+      reason = 'No tiene departamentos asignados (maneja todo)';
+    }
+
+    console.log(`🔍 Contacto ${contact.type} (${contact.email}): ${shouldInclude ? '✅ INCLUIDO' : '❌ EXCLUIDO'} - ${reason}`);
+    return shouldInclude;
+  });
+
+  console.log(`📧 Contactos filtrados para "${department}":`, departmentContacts.map(c => c.email));
+  return departmentContacts;
+};
+
 export const fetchBranches = async () => {
   try {
     console.log('🔄 Obteniendo sucursales y contactos...');
@@ -33,27 +113,32 @@ export const fetchBranches = async () => {
     const branchesWithContacts = branches.map(branch => {
       const branchContacts = contacts.filter(contact => contact.branch_id === branch.id);
       
-      // Encontrar el email principal (prioridad: RRHH > Gerente > Supervisor)
+      // Filtrar solo los tipos válidos: Gerente, Supervisor, RRHH
+      const validContacts = branchContacts.filter(contact => 
+        ['Gerente', 'Supervisor', 'RRHH'].includes(contact.type)
+      );
+      
+      // Encontrar el email principal (prioridad: Gerente > Supervisor > RRHH)
       let primaryEmail = null;
       let primaryContact = null;
       
-      // Buscar RRHH primero
-      const rrhhContact = branchContacts.find(c => c.type === 'RRHH');
-      if (rrhhContact) {
-        primaryEmail = rrhhContact.email;
-        primaryContact = rrhhContact;
+      // Buscar Gerente primero
+      const gerenteContact = validContacts.find(c => c.type === 'Gerente');
+      if (gerenteContact) {
+        primaryEmail = gerenteContact.email;
+        primaryContact = gerenteContact;
       } else {
-        // Buscar Gerente
-        const gerenteContact = branchContacts.find(c => c.type === 'Gerente');
-        if (gerenteContact) {
-          primaryEmail = gerenteContact.email;
-          primaryContact = gerenteContact;
+        // Buscar Supervisor
+        const supervisorContact = validContacts.find(c => c.type === 'Supervisor');
+        if (supervisorContact) {
+          primaryEmail = supervisorContact.email;
+          primaryContact = supervisorContact;
         } else {
-          // Buscar Supervisor
-          const supervisorContact = branchContacts.find(c => c.type === 'Supervisor');
-          if (supervisorContact) {
-            primaryEmail = supervisorContact.email;
-            primaryContact = supervisorContact;
+          // Buscar RRHH
+          const rrhhContact = validContacts.find(c => c.type === 'RRHH');
+          if (rrhhContact) {
+            primaryEmail = rrhhContact.email;
+            primaryContact = rrhhContact;
           }
         }
       }
@@ -63,7 +148,7 @@ export const fetchBranches = async () => {
         email: primaryEmail,
         contact_email: primaryEmail,
         contact_name: primaryContact?.type || 'Sin contacto',
-        contacts: branchContacts
+        contacts: validContacts // Solo contactos válidos
       };
     });
 

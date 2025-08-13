@@ -21,7 +21,7 @@ import {
 } from 'lucide-react';
 import { parseExcelFile, extractBranchCode } from '../utils/excelParser';
 import { sendEmail, generateEmailMessage } from '../utils/emailService';
-import { fetchBranches } from '../utils/supabase';
+import { fetchBranches, getContactsByDepartment } from '../utils/supabase';
 
 const FileUpload = () => {
   const [uploadedFile, setUploadedFile] = useState(null);
@@ -34,6 +34,7 @@ const FileUpload = () => {
   const [excelData, setExcelData] = useState(null);
   const [dataByBranch, setDataByBranch] = useState(null);
   const [branches, setBranches] = useState(null);
+  const [isTestMode, setIsTestMode] = useState(false);
   const [stats, setStats] = useState({
     totalFiles: 0,
     totalEmails: 0,
@@ -165,6 +166,11 @@ const FileUpload = () => {
               }
               groupedData[branchCode].push(record);
               console.log(`✅ Registro agregado a sucursal: ${branchCode}`);
+              
+              // Mostrar información de clasificación si hay infracciones
+              if (record.classification && record.classification.violations.length > 0) {
+                console.log(`⚠️ Infracciones detectadas en registro ${index + 1}:`, record.classification.violations);
+              }
             } else {
               console.warn(`⚠️ Código de sucursal ${branchCode} no encontrado en la base de datos`);
               console.log(`Sucursales disponibles:`, fetchedBranches.map(b => ({ code: b.code, name: b.name })));
@@ -179,6 +185,21 @@ const FileUpload = () => {
 
       console.log('Datos agrupados por sucursal:', groupedData);
       console.log('Total de sucursales encontradas:', Object.keys(groupedData).length);
+
+      // Calcular estadísticas de infracciones
+      let totalInfractions = 0;
+      let recordsWithInfractions = 0;
+      
+      Object.values(groupedData).forEach(branchRecords => {
+        branchRecords.forEach(record => {
+          if (record.classification && record.classification.violations.length > 0) {
+            totalInfractions += record.classification.violations.length;
+            recordsWithInfractions++;
+          }
+        });
+      });
+
+      console.log(`📊 Estadísticas de infracciones: ${totalInfractions} infracciones en ${recordsWithInfractions} registros`);
 
       // Guardar datos para uso posterior
       setExcelData(parsedData);
@@ -195,7 +216,9 @@ const FileUpload = () => {
         errors: 0,
         processingTime: '< 30s',
         branchesProcessed: Object.keys(groupedData).length,
-        readyForEmails: true // Indicar que está listo para enviar correos
+        readyForEmails: true, // Indicar que está listo para enviar correos
+        totalInfractions,
+        recordsWithInfractions
       });
 
       // Actualizar estadísticas
@@ -237,8 +260,12 @@ const FileUpload = () => {
       let emailsSent = 0;
       let errors = 0;
       const startTime = Date.now();
+      const emailSummary = [];
 
       console.log('🚀 Iniciando envío de correos...');
+      if (isTestMode) {
+        console.log('🧪 MODO PRUEBA: Simulando envío sin enviar correos reales');
+      }
 
       for (const [branchCode, branchData] of Object.entries(dataByBranch)) {
         try {
@@ -253,55 +280,208 @@ const FileUpload = () => {
           );
           
           console.log(`Sucursal encontrada en BD:`, branch);
-          console.log(`Emails disponibles:`, branch?.contacts?.map(c => `${c.type}: ${c.email}`));
           
-          if (branch && (branch.email || branch.contact_email)) {
-            // Generar mensaje completo del correo con la tabla HTML
-            const emailMessage = generateEmailMessage(branchData, branch.name || branchCode);
+          if (!branch) {
+            console.warn(`⚠️ Sucursal ${branchCode} no encontrada en la base de datos`);
+            errors++;
+            continue;
+          }
+
+          // Verificar que tenga contacto Gerente (obligatorio)
+          const gerenteContact = branch.contacts?.find(c => c.type === 'Gerente');
+          if (!gerenteContact && !branch.email) {
+            console.warn(`⚠️ Sucursal ${branchCode} no tiene contacto Gerente ni email configurado`);
+            errors++;
+            continue;
+          }
+
+          // Lógica de agrupación según el tipo de sucursal
+          if (branchCode === 'AC_RNV_CMX_PPTN_1') {
+            // Sucursal especial con departamentos
+            console.log(`🏢 Procesando sucursal especial ${branchCode} con departamentos`);
             
-            console.log(`📊 Tabla HTML generada para ${branchCode}:`, emailMessage.substring(0, 200) + '...');
+            // Agrupar por departamento
+            const recordsByDept = {};
+            branchData.forEach(record => {
+              const dept = record['Grupo de asistencia']?.trim();
+              const key = dept && dept !== '-' ? dept : 'General';
+              if (!recordsByDept[key]) {
+                recordsByDept[key] = [];
+              }
+              recordsByDept[key].push(record);
+            });
+
+            console.log(`📊 Departamentos encontrados:`, Object.keys(recordsByDept));
+
+            // Enviar correo por cada departamento
+            for (const [deptName, deptRecords] of Object.entries(recordsByDept)) {
+              if (deptRecords.length === 0) continue;
+
+              const hasInfractions = deptRecords.some(r => r.classification?.violations?.length > 0);
+              const blockLabel = deptName === 'General' ? 'General' : `Departamento: ${deptName}`;
+              
+              console.log(`📧 Enviando correo para ${deptName}: ${deptRecords.length} registros, infracciones: ${hasInfractions}`);
+
+              // Generar mensaje del correo
+              const emailMessage = generateEmailMessage(deptRecords, branch.name || branchCode, {
+                hasInfractions,
+                blockLabel
+              });
+
+              // Obtener contactos específicos para este departamento
+              const departmentContacts = getContactsByDepartment(branch.contacts, deptName);
+              console.log(`👥 Contactos para departamento ${deptName}:`, departmentContacts);
+
+              // Preparar destinatarios
+              const toEmail = gerenteContact?.email || branch.email;
+              const ccEmails = [];
+
+              // Agregar contactos filtrados por departamento
+              departmentContacts.forEach(contact => {
+                if (contact.email !== toEmail && !ccEmails.includes(contact.email)) {
+                  ccEmails.push(contact.email);
+                  console.log(`✅ Agregando ${contact.type} (${contact.email}) al CC para ${deptName}`);
+                }
+              });
+
+              // Agregar contacto de la tienda (branches.email) si existe y no está duplicado
+              if (branch.email && branch.email !== toEmail && !ccEmails.includes(branch.email)) {
+                ccEmails.push(branch.email);
+                console.log(`✅ Agregando contacto de tienda (${branch.email}) al CC`);
+              }
+
+              // Generar asunto
+              const subject = deptName === 'General' 
+                ? `Reporte Diario - ${branch.code} - General`
+                : `Reporte Diario - ${branch.code} - ${deptName}`;
+
+              // Preparar parámetros del correo
+              const templateParams = {
+                to_email: toEmail,
+                subject,
+                message: emailMessage,
+                cc_emails: ccEmails.join(', '),
+                branch_code: branch.code,
+                branch_name: branch.name || branchCode
+              };
+
+              console.log('📧 Enviando correo:', { to: toEmail, cc: ccEmails, subject, dept: deptName });
+
+              // En modo de prueba, solo simular
+              if (isTestMode) {
+                emailsSent++;
+                emailSummary.push({
+                  branch: branch.name || branchCode,
+                  dept: deptName,
+                  to: toEmail,
+                  cc: ccEmails,
+                  subject,
+                  records: deptRecords.length,
+                  hasInfractions,
+                  violations: deptRecords
+                    .filter(r => r.classification?.violations?.length > 0)
+                    .map(r => ({
+                      nombre: r['Nombre'],
+                      violations: r.classification.violations
+                    })),
+                  contacts: departmentContacts.map(c => `${c.type}: ${c.email}`)
+                });
+                console.log(`🧪 SIMULADO: Correo para ${deptName} (${deptRecords.length} registros)`);
+              } else {
+                // Enviar correo real
+                const emailResult = await sendEmail(templateParams);
+                
+                if (emailResult.success) {
+                  emailsSent++;
+                  console.log(`✅ Correo enviado exitosamente para ${deptName}`);
+                } else {
+                  errors++;
+                  console.error(`❌ Error enviando correo para ${deptName}:`, emailResult.error);
+                }
+              }
+            }
+          } else {
+            // Otras sucursales: un correo con todos los registros
+            console.log(`🏢 Procesando sucursal regular ${branchCode}`);
             
-            // Obtener emails adicionales para copia (excluyendo el email principal)
-            const additionalEmails = branch.contacts
-              ?.filter(contact => contact.email !== (branch.email || branch.contact_email))
-              ?.map(contact => contact.email)
-              ?.filter(Boolean) || [];
-            
-            const ccEmails = additionalEmails.join(', ');
-            
-            // Preparar parámetros del correo según la plantilla
+            const hasInfractions = branchData.some(r => r.classification?.violations?.length > 0);
+            console.log(`📊 Infracciones detectadas: ${hasInfractions}`);
+
+            // Generar mensaje del correo
+            const emailMessage = generateEmailMessage(branchData, branch.name || branchCode, {
+              hasInfractions,
+              blockLabel: 'General'
+            });
+
+            // Preparar destinatarios
+            const toEmail = gerenteContact?.email || branch.email;
+            const ccEmails = [];
+
+            // Agregar Supervisor si existe
+            const supervisorContact = branch.contacts?.find(c => c.type === 'Supervisor');
+            if (supervisorContact && supervisorContact.email !== toEmail) {
+              ccEmails.push(supervisorContact.email);
+            }
+
+            // Agregar contacto de la tienda (branches.email) si existe y no está duplicado
+            if (branch.email && branch.email !== toEmail && !ccEmails.includes(branch.email)) {
+              ccEmails.push(branch.email);
+            }
+
+            // Agregar RRHH solo si hay infracciones
+            if (hasInfractions) {
+              const rrhhContact = branch.contacts?.find(c => c.type === 'RRHH');
+              if (rrhhContact && rrhhContact.email !== toEmail && !ccEmails.includes(rrhhContact.email)) {
+                ccEmails.push(rrhhContact.email);
+              }
+            }
+
+            // Generar asunto
+            const subject = `Reporte Diario - ${branch.code} - General`;
+
+            // Preparar parámetros del correo
             const templateParams = {
-              to_email: branch.email || branch.contact_email,
-              subject: `Reporte Diario - ${branch.code}`,
+              to_email: toEmail,
+              subject,
               message: emailMessage,
-              cc_emails: ccEmails,
+              cc_emails: ccEmails.join(', '),
               branch_code: branch.code,
               branch_name: branch.name || branchCode
             };
 
-            console.log('📧 Enviando correo a:', branch.email || branch.contact_email);
-            console.log('📋 Parámetros del template:', templateParams);
-            console.log('👥 Emails adicionales (CC):', ccEmails || 'Ninguno');
+            console.log('📧 Enviando correo:', { to: toEmail, cc: ccEmails, subject });
 
-            // Enviar correo
-            const emailResult = await sendEmail(templateParams);
-            
-            if (emailResult.success) {
+            // En modo de prueba, solo simular
+            if (isTestMode) {
               emailsSent++;
-              console.log(`✅ Correo enviado exitosamente a ${branch.name || branchCode}`);
+              emailSummary.push({
+                branch: branch.name || branchCode,
+                dept: 'General',
+                to: toEmail,
+                cc: ccEmails,
+                subject,
+                records: branchData.length,
+                hasInfractions,
+                violations: branchData
+                  .filter(r => r.classification?.violations?.length > 0)
+                  .map(r => ({
+                    nombre: r['Nombre'],
+                    violations: r.classification.violations
+                  }))
+              });
+              console.log(`🧪 SIMULADO: Correo para ${branch.name || branchCode} (${branchData.length} registros)`);
             } else {
-              errors++;
-              console.error(`❌ Error enviando correo a ${branch.name || branchCode}:`, emailResult.error);
+              // Enviar correo real
+              const emailResult = await sendEmail(templateParams);
+              
+              if (emailResult.success) {
+                emailsSent++;
+                console.log(`✅ Correo enviado exitosamente a ${branch.name || branchCode}`);
+              } else {
+                errors++;
+                console.error(`❌ Error enviando correo a ${branch.name || branchCode}:`, emailResult.error);
+              }
             }
-          } else {
-            console.warn(`⚠️ Sucursal ${branchCode} no encontrada o sin email configurado`);
-            console.log(`Buscando coincidencia para: ${branchCode}`);
-            console.log(`Sucursales disponibles:`, branches.map(b => ({ 
-              code: b.code, 
-              name: b.name, 
-              department: b.department,
-              email: b.email || b.contact_email 
-            })));
           }
         } catch (emailError) {
           errors++;
@@ -317,7 +497,8 @@ const FileUpload = () => {
         ...prev,
         emailsSent,
         errors,
-        processingTime: `${processingTime}s`
+        processingTime: `${processingTime}s`,
+        emailSummary: isTestMode ? emailSummary : undefined
       }));
 
       // Actualizar estadísticas
@@ -329,10 +510,13 @@ const FileUpload = () => {
       console.log('✅ Envío de correos completado:', {
         emailsSent,
         errors,
-        processingTime: `${processingTime}s`
+        processingTime: `${processingTime}s`,
+        testMode: isTestMode
       });
 
-      if (emailsSent > 0) {
+      if (isTestMode) {
+        alert(`🧪 SIMULACIÓN COMPLETADA\n\nSe simularon ${emailsSent} correos en ${processingTime} segundos\n\nRevisa el resumen detallado abajo para ver qué se habría enviado.`);
+      } else if (emailsSent > 0) {
         alert(`✅ Se enviaron ${emailsSent} correos exitosamente en ${processingTime} segundos`);
       } else {
         alert('⚠️ No se pudo enviar ningún correo. Revisa la consola para más detalles.');
@@ -361,6 +545,11 @@ Emails Enviados: ${results.emailsSent}
 Errores: ${results.errors}
 Sucursales Procesadas: ${results.branchesProcessed}
 Tiempo de Procesamiento: ${results.processingTime}
+${results.totalInfractions > 0 ? `
+ESTADÍSTICAS DE INFRACCIONES:
+Total de Infracciones: ${results.totalInfractions}
+Registros con Infracciones: ${results.recordsWithInfractions}
+` : ''}
       `;
       
       const blob = new Blob([resultsText], { type: 'text/plain' });
@@ -417,6 +606,17 @@ Tiempo de Procesamiento: ${results.processingTime}
               <p className="text-info">Procesa archivos Excel y envía reportes automáticamente</p>
             </div>
             <div className="flex items-center space-x-4">
+              <button 
+                onClick={() => setIsTestMode(!isTestMode)}
+                className={`p-2 rounded-lg transition-colors ${
+                  isTestMode 
+                    ? 'bg-orange-100 text-orange-600 hover:bg-orange-200' 
+                    : 'bg-secondary-100 text-secondary-600 hover:bg-secondary-200'
+                }`}
+                title={isTestMode ? "Desactivar Modo Prueba" : "Activar Modo Prueba"}
+              >
+                {isTestMode ? "🧪 PRUEBA" : "🧪"}
+              </button>
               <button 
                 onClick={async () => {
                   try {
@@ -491,6 +691,13 @@ Tiempo de Procesamiento: ${results.processingTime}
               <div className="text-center mb-8">
                 <h2 className="text-2xl font-bold text-dark mb-2">Cargar Archivo Excel</h2>
                 <p className="text-info">Arrastra y suelta tu archivo o haz clic para seleccionar</p>
+                {isTestMode && (
+                  <div className="mt-3 p-2 bg-orange-100 border border-orange-300 rounded-lg">
+                    <p className="text-orange-800 text-sm font-medium">
+                      🧪 MODO PRUEBA ACTIVADO - No se enviarán correos reales
+                    </p>
+                  </div>
+                )}
               </div>
 
               {/* Drag & Drop Area */}
@@ -684,6 +891,89 @@ Tiempo de Procesamiento: ${results.processingTime}
                       <p className="text-sm text-warning-800">Sucursales Procesadas</p>
                     </div>
                   </div>
+                  
+                  {/* Estadísticas de infracciones */}
+                  {results.totalInfractions > 0 && (
+                    <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
+                      <div className="flex items-center gap-3 mb-3">
+                        <AlertTriangle className="w-6 h-6 text-red-600" />
+                        <h4 className="text-lg font-semibold text-red-800">Infracciones Detectadas</h4>
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="text-center p-3 bg-white rounded-lg border border-red-200">
+                          <p className="text-xl font-bold text-red-600">{results.totalInfractions}</p>
+                          <p className="text-sm text-red-700">Total de Infracciones</p>
+                        </div>
+                        <div className="text-center p-3 bg-white rounded-lg border border-red-200">
+                          <p className="text-xl font-bold text-red-600">{results.recordsWithInfractions}</p>
+                          <p className="text-sm text-red-700">Registros con Infracciones</p>
+                        </div>
+                      </div>
+                      <p className="text-sm text-red-600 mt-3 text-center">
+                        ⚠️ Los valores en rojo en el reporte indican registros fuera de horario o con pausas no permitidas
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Resumen de Correos (Modo Prueba) */}
+                  {results.emailSummary && (
+                    <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-xl">
+                      <div className="flex items-center gap-3 mb-4">
+                        <Mail className="w-6 h-6 text-blue-600" />
+                        <h4 className="text-lg font-semibold text-blue-800">🧪 Resumen de Correos Simulados</h4>
+                      </div>
+                      
+                      <div className="space-y-4">
+                        {results.emailSummary.map((email, index) => (
+                          <div key={index} className="bg-white rounded-lg border border-blue-200 p-4">
+                            <div className="flex items-center justify-between mb-2">
+                              <h5 className="font-semibold text-blue-800">
+                                {email.branch} - {email.dept}
+                              </h5>
+                              <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                                email.hasInfractions 
+                                  ? 'bg-red-100 text-red-800 border border-red-200' 
+                                  : 'bg-green-100 text-green-800 border border-green-200'
+                              }`}>
+                                {email.hasInfractions ? '⚠️ Con Infracciones' : '✅ Sin Infracciones'}
+                              </span>
+                            </div>
+                            
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                                <div>
+                                  <p className="text-gray-600"><strong>TO:</strong> {email.to}</p>
+                                  <p className="text-gray-600"><strong>CC:</strong> {email.cc.length > 0 ? email.cc.join(', ') : 'Ninguno'}</p>
+                                  <p className="text-gray-600"><strong>Asunto:</strong> {email.subject}</p>
+                                  <p className="text-gray-600"><strong>Registros:</strong> {email.records}</p>
+                                  {email.contacts && (
+                                    <p className="text-gray-600"><strong>Contactos del Depto:</strong> {email.contacts.join(', ')}</p>
+                                  )}
+                                </div>
+                              
+                              {email.hasInfractions && (
+                                <div className="bg-red-50 p-3 rounded-lg border border-red-200">
+                                  <p className="text-red-800 font-medium mb-2">Infracciones detectadas:</p>
+                                  <div className="space-y-1">
+                                    {email.violations.map((violation, vIndex) => (
+                                      <div key={vIndex} className="text-red-700 text-xs">
+                                        <strong>{violation.nombre}:</strong> {violation.violations.join(', ')}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      
+                      <div className="mt-4 p-3 bg-blue-100 rounded-lg">
+                        <p className="text-blue-800 text-sm text-center">
+                          💡 Este es un resumen de lo que se habría enviado. Activa el modo real para enviar correos verdaderos.
+                        </p>
+                      </div>
+                    </div>
+                  )}
                   <div className="flex justify-center space-x-4">
                     {results.readyForEmails && (
                       <motion.button
@@ -691,10 +981,19 @@ Tiempo de Procesamiento: ${results.processingTime}
                         whileTap={{ scale: 0.98 }}
                         onClick={sendEmails}
                         disabled={isSendingEmails}
-                        className="flex items-center gap-2 bg-primary hover:bg-primary-600 text-white px-6 py-3 rounded-lg font-medium transition-colors disabled:opacity-50"
+                        className={`flex items-center gap-2 px-6 py-3 rounded-lg font-medium transition-colors disabled:opacity-50 ${
+                          isTestMode 
+                            ? 'bg-orange-500 hover:bg-orange-600 text-white' 
+                            : 'bg-primary hover:bg-primary-600 text-white'
+                        }`}
                       >
                         <Mail className="w-5 h-5" />
-                        {isSendingEmails ? 'Enviando Correos...' : 'Enviar Correos'}
+                        {isSendingEmails 
+                          ? 'Enviando Correos...' 
+                          : isTestMode 
+                            ? '🧪 Simular Envío' 
+                            : 'Enviar Correos'
+                        }
                       </motion.button>
                     )}
                     <motion.button
@@ -740,6 +1039,18 @@ Tiempo de Procesamiento: ${results.processingTime}
                 <p>3. Carga el archivo usando el área de arrastrar y soltar</p>
                 <p>4. El sistema procesará automáticamente los datos</p>
                 <p>5. Los reportes se enviarán por email a cada sucursal</p>
+                
+                {isTestMode && (
+                  <div className="mt-4 p-3 bg-orange-50 border border-orange-200 rounded-lg">
+                    <p className="text-orange-800 font-medium mb-2">🧪 Modo Prueba Activado:</p>
+                    <ul className="text-orange-700 text-xs space-y-1">
+                      <li>• No se enviarán correos reales</li>
+                      <li>• Verás un resumen detallado de lo que se habría enviado</li>
+                      <li>• Perfecto para probar la lógica sin molestar a las tiendas</li>
+                      <li>• Desactiva el modo para enviar correos verdaderos</li>
+                    </ul>
+                  </div>
+                )}
               </div>
             </motion.div>
 
